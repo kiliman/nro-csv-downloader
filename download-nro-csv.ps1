@@ -148,11 +148,20 @@ function Invoke-AuthGet { param([string]$Fn)
 }
 function Invoke-AuthPost { param([string]$Fn, [string]$Body)
     if ($CurlExe) {
-        $raw = & $CurlExe -sS -X POST "$Base/$Fn" `
-            -H "Authorization: Bearer $token" `
-            -H 'content-type: application/json' `
-            -H 'x-tsr-serverfn: true' `
-            -d $Body
+        # PS 5.1 does not escape embedded double quotes when passing args to
+        # native exes, which would mangle the JSON body. Hand it over via a
+        # temp file (-d @file) so no command-line quoting is involved.
+        $tmp = [System.IO.Path]::GetTempFileName()
+        try {
+            [System.IO.File]::WriteAllText($tmp, $Body)
+            $raw = & $CurlExe -sS -X POST "$Base/$Fn" `
+                -H "Authorization: Bearer $token" `
+                -H 'content-type: application/json' `
+                -H 'x-tsr-serverfn: true' `
+                --data-binary "@$tmp"
+        } finally {
+            Remove-Item $tmp -ErrorAction SilentlyContinue
+        }
         if ($LASTEXITCODE -ne 0) { Fail "curl POST $Fn failed: $raw" }
         return ($raw -join "`n") | ConvertFrom-Json
     }
@@ -189,6 +198,9 @@ Write-Log "Project: $projectName ($projectId)"
 # We learn the filename here (it's in the payload) so we can skip the expensive
 # SharePoint fetch entirely when we already have this exact file on disk.
 $meta = Invoke-AuthPost $FnLatestFile (New-FramedArg 'projectId' $projectId)
+if (-not $meta.p.v) {
+    Fail "Unexpected latestFileMeta response: $($meta | ConvertTo-Json -Compress -Depth 20)"
+}
 $metaName = $meta.p.v[0].p.v[0].s; if (-not $metaName) { $metaName = '?' }
 $metaDate = $meta.p.v[0].p.v[2].s; if (-not $metaDate) { $metaDate = '?' }
 Write-Log "Latest file: $metaName (uploaded $metaDate)"
