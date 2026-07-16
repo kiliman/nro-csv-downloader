@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    download-nro-csv.ps1 — Log into nro.group (Supabase auth) and download the
+    download-nro-csv.ps1 -- Log into nro.group (Supabase auth) and download the
     latest CSV for a project from its SharePoint backing store.
 
 .DESCRIPTION
@@ -66,11 +66,11 @@ $FnLatestFile   = '58b9ea97c3cb8d74d07569fcfd4475ce91f63baf9ebbd499dbf61b03b754f
 $FnDownloadUrl  = 'c0bf35af7f5ab83c3154e654edf41fa7ba88bf099fe874041d5ebb1619e10b0a'
 
 function Write-Log { param([string]$Message)
-    Write-Host '▸ ' -ForegroundColor Cyan -NoNewline
+    Write-Host '> ' -ForegroundColor Cyan -NoNewline
     Write-Host $Message
 }
 function Fail { param([string]$Message)
-    Write-Host "✗ $Message" -ForegroundColor Red
+    Write-Host "x $Message" -ForegroundColor Red
     exit 1
 }
 
@@ -151,7 +151,7 @@ Write-Log "Latest file: $metaName (uploaded $metaDate)"
 
 $existing = Join-Path $OutputDir $metaName
 if (-not $Force -and (Test-Path $existing) -and (Get-Item $existing).Length -gt 0) {
-    Write-Log "Already have $metaName — skipping SharePoint download. (use -Force to re-download)"
+    Write-Log "Already have $metaName -- skipping SharePoint download. (use -Force to re-download)"
     Write-Output $existing
     exit 0
 }
