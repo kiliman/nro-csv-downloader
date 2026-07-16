@@ -15,6 +15,13 @@
     an `Authorization: Bearer` header. The SharePoint URL carries its own short-lived
     `tempauth` token, so the final download needs no extra auth.
 
+    TLS NOTE: nro.group requires TLS 1.3. Windows Schannel (which
+    Invoke-RestMethod uses) only supports TLS 1.3 on Windows 11 / Server 2022+.
+    On older Windows (e.g. Server 2012), download the official curl for Windows
+    build from https://curl.se/windows/ and place curl.exe (plus
+    curl-ca-bundle.crt from the same bin folder) next to this script, or on
+    PATH. It ships its own OpenSSL and is detected and used automatically.
+
 .PARAMETER OutputDir
     Download directory. Defaults to $env:OUTPUT_DIR, then .\downloads
 
@@ -54,6 +61,24 @@ $ProgressPreference = 'SilentlyContinue'   # big speedup for Invoke-WebRequest o
 try { [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12 } catch {}
 
 if ($env:FORCE -eq '1') { $Force = $true }
+
+# --- TLS 1.3 shim -------------------------------------------------------------
+# nro.group only accepts TLS 1.3, which Schannel lacks on older Windows. If a
+# curl.exe with its own TLS stack (OpenSSL etc.) is next to this script or on
+# PATH, route the nro.group calls through it instead of Invoke-RestMethod.
+# (Windows 10's built-in curl.exe uses Schannel, so it is deliberately skipped.)
+$CurlExe = $null
+$curlCandidate = Join-Path $PSScriptRoot 'curl.exe'
+if (-not (Test-Path $curlCandidate)) {
+    $curlCmd = Get-Command curl.exe -ErrorAction SilentlyContinue
+    $curlCandidate = if ($curlCmd) { $curlCmd.Source } else { $null }
+}
+if ($curlCandidate) {
+    $curlVer = (& $curlCandidate -V 2>$null) -join ' '
+    if ($curlVer -match 'OpenSSL|BoringSSL|quictls|LibreSSL|rustls|GnuTLS|wolfSSL') {
+        $CurlExe = $curlCandidate
+    }
+}
 
 # --- config -----------------------------------------------------------------
 $SupabaseUrl = 'https://yqbcixrtovuskzimsnpo.supabase.co'
@@ -104,7 +129,17 @@ $token = $login.access_token
 if (-not $token) { Fail "Login failed: $($login | ConvertTo-Json -Compress)" }
 Write-Log 'Authenticated.'
 
+if ($CurlExe) { Write-Log "nro.group needs TLS 1.3; using curl: $CurlExe" }
+
 function Invoke-AuthGet { param([string]$Fn)
+    if ($CurlExe) {
+        $raw = & $CurlExe -sS "$Base/$Fn" `
+            -H "Authorization: Bearer $token" `
+            -H 'accept: application/json' `
+            -H 'x-tsr-serverfn: true'
+        if ($LASTEXITCODE -ne 0) { Fail "curl GET $Fn failed: $raw" }
+        return ($raw -join "`n") | ConvertFrom-Json
+    }
     Invoke-RestMethod -Uri "$Base/$Fn" -Headers @{
         Authorization      = "Bearer $token"
         accept             = 'application/json'
@@ -112,6 +147,15 @@ function Invoke-AuthGet { param([string]$Fn)
     }
 }
 function Invoke-AuthPost { param([string]$Fn, [string]$Body)
+    if ($CurlExe) {
+        $raw = & $CurlExe -sS -X POST "$Base/$Fn" `
+            -H "Authorization: Bearer $token" `
+            -H 'content-type: application/json' `
+            -H 'x-tsr-serverfn: true' `
+            -d $Body
+        if ($LASTEXITCODE -ne 0) { Fail "curl POST $Fn failed: $raw" }
+        return ($raw -join "`n") | ConvertFrom-Json
+    }
     Invoke-RestMethod -Method Post -Uri "$Base/$Fn" -Headers @{
         Authorization      = "Bearer $token"
         'x-tsr-serverfn'   = 'true'
@@ -167,10 +211,15 @@ if (-not $filename) { $filename = $metaName }
 New-Item -ItemType Directory -Path $OutputDir -Force | Out-Null
 $out = Join-Path $OutputDir $filename
 Write-Log "Downloading -> $out"
-try {
-    Invoke-WebRequest -Uri $url -OutFile $out   # follows redirects by default
-} catch {
-    Fail "Download failed: $($_.Exception.Message)"
+if ($CurlExe) {
+    $http = & $CurlExe -sS -L $url -o $out -w '%{http_code}'
+    if ($LASTEXITCODE -ne 0 -or $http -ne '200') { Fail "Download failed (HTTP $http)" }
+} else {
+    try {
+        Invoke-WebRequest -Uri $url -OutFile $out   # follows redirects by default
+    } catch {
+        Fail "Download failed: $($_.Exception.Message)"
+    }
 }
 
 $size = (Get-Item $out).Length
